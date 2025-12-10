@@ -1,5 +1,6 @@
 const express = require('express')
 require('dotenv').config()
+console.log('JWT_KEY length =>', process.env.JWT_KEY?.length);
 console.log('CLIENT_URL from env =>', process.env.CLIENT_URL)
 var jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
@@ -9,7 +10,10 @@ const cors = require('cors')
 const port = process.env.PORT || 3000
 app.use(express.json())
 app.use(cors({
-  origin:process.env.CLIENT_URL,
+  origin:[
+    'http://localhost:5173',
+    'http://localhost:3000',
+  ],
   credentials:true
 
 }))
@@ -28,6 +32,7 @@ const client = new MongoClient(uri, {
 
 const winfinityDB = client.db("WinfinityDB");
 const userColl = winfinityDB.collection("Alluser");
+const ContestColl = winfinityDB.collection("Allcontest");
 
 const veryfyjwt=(req,res,next)=>{
   const token= req.cookies?.token;
@@ -65,6 +70,7 @@ const verifycreator=async(req,res,next)=>{
   if(!user || user.role !== `creator`){
     return res.status(403).send({ message: "forbidden access" });
   }
+  req.dbUser=user
   next();
 
 }
@@ -80,26 +86,32 @@ async function run() {
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
     
-    app.post(`/jwt`,(req,res)=>{
-      const logeduser= req.body
-      const token=jwt.sign(logeduser, process.env.JWT_KEY,{expiresIn:`7d`})
-      res.cookie(`token`,token,{
-        httpOnly:true,
-        secure:false,
-        sameSite:"lax"
+    app.post('/jwt', (req, res) => {
+  try {
+    const logeduser = req.body;
 
+    console.log('JWT_KEY length =>', process.env.JWT_KEY?.length);
+    console.log('Payload for JWT =>', logeduser);
 
-      }).send({success:true})
+    if (!process.env.JWT_KEY) {
+      console.error('JWT_KEY missing from env!');
+      return res.status(500).send({ message: 'Server misconfigured: missing JWT_KEY' });
+    }
 
-    }),
-     app.post('/logout',(req,res)=>{
-      res.clearCookie(`token`,{
-        httpOnly:true,
-        secure:false,
-        sameSite:"lax"
+    const token = jwt.sign(logeduser, process.env.JWT_KEY, { expiresIn: '7d' });
 
-      }).send({success:true})
-     })
+    res
+      .cookie('token', token, {
+        httpOnly: true,
+        secure: false, // set to true when using https in production
+        sameSite: 'lax',
+      })
+      .send({ success: true });
+  } catch (err) {
+    console.error('Error in /jwt route:', err);
+    res.status(500).send({ message: 'Failed to create token' });
+  }
+});
     app.post(`/userdata`,async(req , res)=>{
       const userdata= req.body
 
@@ -141,22 +153,85 @@ async function run() {
 
       try{
          const ID=req.params.id
+         const{role}=req.body
       const filter={_id: new ObjectId(ID)}
       const updateddoc={
-        $set:{role:`admin`}
+        $set:{role:`${role}`}
         
       }
 
       const result= await userColl.updateOne(filter,updateddoc)
+        console.log('updateOne result =>', result);
+
+        if (!result.matchedCount) {
+      return res.status(404).send({
+        success: false,
+        message: 'User not found for this ID',
+      });
+    }
       res.send({
         success:true,
         message:`Promoted to Admin`,
         result
       })
 
-      }ca
+      }catch(error){
+        console.error('Error promoting user:', error);
+        res.status(500).send({
+      success: false,
+      message: 'Server error while promoting user',
+    })
+      }
      
      
+    })
+
+    app.post(`/creator/contest`,veryfyjwt,verifycreator,async(req,res)=>{
+      try{
+        const{name,
+      photoo,
+      description,
+      price,
+      prizeMoney,
+      taskInstruction,
+      type,
+      deadline,}= req.body
+
+       if (!name || !photoo || !description || !price || !prizeMoney || !taskInstruction || !type || !deadline) {
+      return res.status(400).send({ message: 'All fields are required' });
+ }
+
+   const newcontest={
+       name,
+      photoo,
+      description,
+      price: Number(price),
+      prizeMoney: Number(prizeMoney),
+      taskInstruction,
+      type,
+      deadline: deadline,
+      creatorId: req.dbUser._id,
+      creatorEmail: req.dbUser.email,
+      status: 'pending',
+      participantsCount: 0,
+      winnerUserId: null,
+      winnerSubmissionId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+     }
+
+     const result= await ContestColl.insertOne(newcontest)
+     return res.send({
+      success: true,
+      message: 'Contest created and pending admin approval',
+      insertedId: result.insertedId,
+     })
+      
+    }catch(err){
+      console.error('Error creating contest:', error);
+    return res.status(500).send({ message: 'Server error while creating contest' })
+    }
+    
     })
 
 
