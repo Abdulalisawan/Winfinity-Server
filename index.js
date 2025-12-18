@@ -33,6 +33,8 @@ const client = new MongoClient(uri, {
 const winfinityDB = client.db("WinfinityDB");
 const userColl = winfinityDB.collection("Alluser");
 const ContestColl = winfinityDB.collection("Allcontest");
+const registrationColl = winfinityDB.collection("Allregistration");
+const submissioncol = winfinityDB.collection("Allsubmission");
 
 const veryfyjwt=(req,res,next)=>{
   const token= req.cookies?.token;
@@ -217,7 +219,7 @@ async function run() {
       winnerUserId: null,
       winnerSubmissionId: null,
       createdAt: new Date(),
-      updatedAt: new Date(),
+      
      }
 
      const result= await ContestColl.insertOne(newcontest)
@@ -232,6 +234,261 @@ async function run() {
     return res.status(500).send({ message: 'Server error while creating contest' })
     }
     
+    })
+
+    app.get('/allcontest',async(req,res)=>{
+      const result= await ContestColl.find().toArray()
+      res.send(result)
+    })
+
+    app.get(`/creatorcontest`,veryfyjwt,verifycreator,async(req , res)=>{
+      
+       const email=req.dbUser.email
+        const query={creatorEmail:email}
+        const result= await ContestColl.find(query).toArray()
+        res.send(result)
+    })
+    app.patch('/contest/:id',veryfyjwt,verifyadmin,async(req,res)=>{
+      const id= req.params.id
+      const {status}=req.body
+      const filter={ _id: new ObjectId(id)}
+      const updateddoc={
+        $set:{status:`${status}`}
+      }
+      const result= await ContestColl.updateOne(filter,updateddoc)
+      res.send(result)
+    })
+    app.get('/contest/status/approved',async(req,res)=>{
+      const filter={status:"Approved"}
+      const result= await ContestColl.find(filter).toArray()
+      res.send(result)
+    })
+
+    app.get('/contest/detail/:id',veryfyjwt,async(req,res)=>{
+      const id= req.params.id
+      const query={_id:new ObjectId(id)}
+      const result= await ContestColl.find(query).toArray()
+      res.send(result)
+    })
+
+    app.post('/logout',async(req,res)=>{
+         res.clearCookie('token',{
+          httpOnly:true,
+          secure:false,
+          sameSite:'lax'
+         })
+         .send({ success: true })
+    })
+
+         
+     app.post('/contest-post',veryfyjwt,async(req,res)=>{
+      try{
+        const{contestId,amount}=req.body
+        const query={ _id: new ObjectId(contestId) , 
+          status:"Approved"}
+        const useremail= req.decoded.email
+
+        const resultcont= await ContestColl.findOne(query)
+        if(!resultcont){
+           return res.status(404).send({ message: "Contest not found or not approved" })
+        }
+        if( new Date(resultcont.deadline)< new Date()){
+          return res.status(400).send({ message: "Contest has already ended" })
+        }
+
+        const exist = await registrationColl.findOne({
+          contestId: contestId,
+          useremail
+        })
+        if(exist){
+          return res.status(400).send({ message: "Already registered" })
+        }
+
+       await registrationColl.insertOne({
+         contestId,
+          useremail,
+          amount,
+           paymentStatus: "paid",
+           paymentedAt: new Date(),
+
+        })
+
+        await userColl.updateOne({ email:useremail},{
+
+                $inc:{participatedCount: 1}
+        })
+        await ContestColl.updateOne(query,{
+          $inc:{participantsCount:1}
+        })
+
+        res.send(`payment done`)
+      }catch(error){
+         console.error("Registration error:", error);
+    res.status(500).send({ message: "Server error during registration" });
+      }
+     })
+
+     app.get(`/payments/status`,veryfyjwt,async(req,res)=>{
+      try{
+      const useremail= req.decoded.email
+      const {contestid}=req.query
+      if(!contestid){
+        return res.status(400).send({ message: "contestId is required" })
+      }
+
+      const query={
+        contestId:contestid,
+        useremail,
+        paymentStatus:"paid"
+
+      }
+
+      const payment= await registrationColl.findOne(query)
+      res.send({
+      hasPaid: !!payment
+      
+    })
+
+      }catch(err){
+        console.error("Payment status error:", err);
+    res.status(500).send({ message: "Internal server error" })
+
+      }
+
+     })
+
+
+      app.post('/submittask',veryfyjwt,async(req,res)=>{
+      try{
+
+        const useremail=req.decoded.email
+      const{contestid, submissionText,name}=req.body
+      const filter={
+        useremail,
+        contestid
+      };
+
+      const payload={
+        useremail,
+        name,
+        contestid,
+         submissionText,
+        isWinner:false
+      }
+
+
+      const filterfind={
+        _id:new ObjectId(contestid)
+      }
+
+
+      const update={
+  $set: {
+    issubmission:true
+
+  },
+}
+
+      const exist= await submissioncol.findOne(filter)
+      if(exist){
+        return res.status(400).send({ message: "All ready submitted" })
+
+      }
+       await submissioncol.insertOne(payload)
+
+       await ContestColl.updateOne(filterfind,update)
+
+
+
+      return res.send(`submission done`)
+
+      }catch(err){
+        console.error("Payment status error:", err);
+    res.status(500).send({ message: "Internal server error" })
+        
+      }
+      
+
+    })
+
+
+
+    app.get(`/submitedornot`,veryfyjwt,async(req,res)=>{
+      const{contestid}=req.query
+      const useremail=req.decoded.email
+      const filter={
+        contestid,
+        useremail
+      }
+
+      const exist= await submissioncol.findOne(filter)
+      if(exist){
+        res.send({issubmited:true})
+      }else{
+        res.send({issubmited:false})
+      }
+      
+    })
+
+     app.get('/contest/detailofupdate/:id',veryfyjwt,async(req,res)=>{
+      const id= req.params.id
+      const query={_id:new ObjectId(id)}
+      const result= await ContestColl.findOne(query)
+      res.send(result)
+    }) 
+
+    app.patch(`/contest/update/:id`,veryfyjwt,verifycreator,async(req,res)=>{
+       const id= req.params.id
+       const contestid= {_id: new ObjectId(id)}
+       const result= await ContestColl.updateOne(contestid,{$set:req.body})
+       res.send(`update done`,result)
+    })
+
+    app.delete('/contest/delete/:id',veryfyjwt,verifycreator,async(req,res)=>{
+      const id= req.params.id
+      const query={_id: new ObjectId(id)}
+      const result= await ContestColl.deleteOne(query)
+      res.send(result)
+
+    })
+
+    app.get(`/submission/:id`,veryfyjwt,verifycreator,async(req,res)=>{
+      const id= req.params.id
+      const filter={contestid:id}
+      const result= await submissioncol.find(filter).toArray()
+      res.send(result)
+
+      
+    })
+
+    app.get(`/contest/name/:id`,veryfyjwt,verifycreator,async(req,res)=>{
+      const id=req.params.id
+      const filter={_id:new ObjectId(id)}
+      const result=await ContestColl.findOne(filter,{projection:{name:1}});
+      res.send(result)
+    })
+
+    app.patch(`/winnerdeclaraqtion`,veryfyjwt,verifycreator,async(req,res)=>{
+      const {id,email}=req.body
+      const filter={contestid:id}
+      const contestfilter={_id:new ObjectId(id)}
+      const contestupdate={
+        $set:{
+          winnerUserId:email
+        }
+      }
+      const update={
+  $set: {
+    isWinner:true
+
+  },
+}
+
+
+      const find=await submissioncol.updateMany(filter,update)
+      const winnerupdate= await ContestColl.updateOne(contestfilter,contestupdate)
+      const userwins= await userColl.updateOne({email:email},{$inc:{wins:1}})
+      res.send(`winner updated`)
     })
 
 
