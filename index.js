@@ -35,6 +35,7 @@ const userColl = winfinityDB.collection("Alluser");
 const ContestColl = winfinityDB.collection("Allcontest");
 const registrationColl = winfinityDB.collection("Allregistration");
 const submissioncol = winfinityDB.collection("Allsubmission");
+const Winnercol = winfinityDB.collection("Allwinner");
 
 const veryfyjwt=(req,res,next)=>{
   const token= req.cookies?.token;
@@ -283,7 +284,7 @@ async function run() {
          
      app.post('/contest-post',veryfyjwt,async(req,res)=>{
       try{
-        const{contestId,amount}=req.body
+        const{contestId,amount,namu,deadline}=req.body
         const query={ _id: new ObjectId(contestId) , 
           status:"Approved"}
         const useremail= req.decoded.email
@@ -306,7 +307,9 @@ async function run() {
 
        await registrationColl.insertOne({
          contestId,
+          namu,
           useremail,
+          deadline,
           amount,
            paymentStatus: "paid",
            paymentedAt: new Date(),
@@ -362,7 +365,7 @@ async function run() {
       try{
 
         const useremail=req.decoded.email
-      const{contestid, submissionText,name}=req.body
+      const{contestid, submissionText,name,contestname,prizemoney}=req.body
       const filter={
         useremail,
         contestid
@@ -372,6 +375,8 @@ async function run() {
         useremail,
         name,
         contestid,
+        contestname,
+         prizemoney,
          submissionText,
         isWinner:false
       }
@@ -474,7 +479,7 @@ async function run() {
       const contestfilter={_id:new ObjectId(id)}
       const contestupdate={
         $set:{
-          winnerUserId:email
+          winnerUserId:email.email
         }
       }
       const update={
@@ -484,13 +489,73 @@ async function run() {
   },
 }
 
+const payload={
+  contestID:id,
+
+  winneremail:email.email,
+  contestname:email.contestname,
+  prizemoney:email.prizemoney
+ 
+}
 
       const find=await submissioncol.updateMany(filter,update)
       const winnerupdate= await ContestColl.updateOne(contestfilter,contestupdate)
-      const userwins= await userColl.updateOne({email:email},{$inc:{wins:1}})
+      const userwins= await userColl.updateOne({email:email.email},{$inc:{wins:1}})
+      const winninglis= await Winnercol.insertOne(payload)
       res.send(`winner updated`)
     })
 
+    app.get(`/paymentdetail-user`,veryfyjwt,async(req,res)=>{
+      const email=req.decoded.email
+      const query={useremail:email}
+      const result=await registrationColl.find(query).toArray()
+      res.send(result)
+    })
+
+   app.get(`/winning-list`,veryfyjwt,async(req,res)=>{
+    const email=req.decoded.email
+    const query={winneremail:email}
+    const result= await Winnercol.find(query).toArray()
+    res.send(result)
+    
+   })
+   app.patch(`/editprofileinfo`,veryfyjwt,async(req,res)=>{
+    const  info=req.body
+    const email=req.decoded.email
+    const query={email:email}
+    const update={
+      $set:info
+    }
+    const result= await userColl.updateOne(query,update)
+    res.send(result)
+   })
+
+   app.get(`/winneruserid/:email`,veryfyjwt,async(req,res)=>{
+    const email=req.params.email
+    const query={email:email}
+    if(email == null){
+      return(`Winner is not selected yet`)
+    }
+    const result= await userColl.findOne(query,{projection:{photoURL:1}})
+    res.send(result)
+   })
+
+   app.get(`/allsearch-contests`,async(req,res)=>{
+    const{search}=req.query
+    const query={
+      status:"Approved"
+    }
+    if(search){
+      query.type={$regex:search,$options:`i`}
+    }
+    const result= await ContestColl.find(query).toArray()
+    res.send(result)
+   })
+
+   app.get(`/hypercontest`,async(req,res)=>{
+    const result= await ContestColl.find({status:"Approved"}).sort({participantsCount:-1}).limit(5).toArray()
+    res.send(result)
+   })
 
   } finally {}
     
