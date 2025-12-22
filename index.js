@@ -4,7 +4,7 @@ console.log('JWT_KEY length =>', process.env.JWT_KEY?.length);
 console.log('CLIENT_URL from env =>', process.env.CLIENT_URL)
 var jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
-
+const stripe = require('stripe')(`${process.env.STRIPE_KEY}`);
 const app = express()
 const cors = require('cors')
 const port = process.env.PORT || 3000
@@ -13,6 +13,7 @@ app.use(cors({
   origin:[
     'http://localhost:5173',
     'http://localhost:3000',
+    'https://winfinityhub.netlify.app'
   ],
   credentials:true
 
@@ -50,7 +51,7 @@ const veryfyjwt=(req,res,next)=>{
       return res.status(403).send({ message: "forbidden" });
     }
     req.decoded=decoded
-    console.log(decoded)
+   
     next();
   })
  
@@ -83,33 +84,33 @@ async function run() {
      
       try {
     
-    await client.connect();
+    // await client.connect();
+    //     await client.db("admin").command({ ping: 1 });
+    // console.log("Pinged your deployment. You successfully connected to MongoDB!");
     
-    await client.db("admin").command({ ping: 1 });
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
+    
 
     
     app.post('/jwt', (req, res) => {
   try {
     const logeduser = req.body;
 
-    console.log('JWT_KEY length =>', process.env.JWT_KEY?.length);
-    console.log('Payload for JWT =>', logeduser);
+    
+    
 
     if (!process.env.JWT_KEY) {
-      console.error('JWT_KEY missing from env!');
+     
       return res.status(500).send({ message: 'Server misconfigured: missing JWT_KEY' });
     }
 
     const token = jwt.sign(logeduser, process.env.JWT_KEY, { expiresIn: '7d' });
 
-    res
-      .cookie('token', token, {
-        httpOnly: true,
-        secure: false, // set to true when using https in production
-        sameSite: 'lax',
-      })
-      .send({ success: true });
+  res.cookie("token", token, {
+  httpOnly: true,
+  secure: true,
+  sameSite: "none",
+  path: "/",
+}).send({ success: true });
   } catch (err) {
     console.error('Error in /jwt route:', err);
     res.status(500).send({ message: 'Failed to create token' });
@@ -273,12 +274,12 @@ async function run() {
     })
 
     app.post('/logout',async(req,res)=>{
-         res.clearCookie('token',{
-          httpOnly:true,
-          secure:false,
-          sameSite:'lax'
-         })
-         .send({ success: true })
+        res.clearCookie("token", {
+  httpOnly: true,
+  secure: true,
+  sameSite: "none",
+  path: "/",
+}).send({ success: true })
     })
 
          
@@ -321,7 +322,7 @@ async function run() {
                 $inc:{participatedCount: 1}
         })
         await ContestColl.updateOne(query,{
-          $inc:{participantsCount:1}
+          $inc:{participantsCount:1} 
         })
 
         res.send(`payment done`)
@@ -469,25 +470,21 @@ async function run() {
     app.get(`/contest/name/:id`,veryfyjwt,verifycreator,async(req,res)=>{
       const id=req.params.id
       const filter={_id:new ObjectId(id)}
-      const result=await ContestColl.findOne(filter,{projection:{name:1}});
+      const result=await ContestColl.findOne(filter,{projection:{name:1,winnerUserId:1}});
       res.send(result)
     })
 
     app.patch(`/winnerdeclaraqtion`,veryfyjwt,verifycreator,async(req,res)=>{
       const {id,email}=req.body
-      const filter={contestid:id}
+      
+      
       const contestfilter={_id:new ObjectId(id)}
       const contestupdate={
         $set:{
           winnerUserId:email.email
         }
       }
-      const update={
-  $set: {
-    isWinner:true
-
-  },
-}
+     
 
 const payload={
   contestID:id,
@@ -498,10 +495,21 @@ const payload={
  
 }
 
-      const find=await submissioncol.updateMany(filter,update)
+      const find=await submissioncol.updateOne({ contestid: id, useremail: email.email },
+  { $set: { isWinner: true } })
       const winnerupdate= await ContestColl.updateOne(contestfilter,contestupdate)
       const userwins= await userColl.updateOne({email:email.email},{$inc:{wins:1}})
-      const winninglis= await Winnercol.insertOne(payload)
+      const winninglis= await Winnercol.updateOne({ contestID: id },
+  {
+    $setOnInsert: {
+      contestID: id,
+      winneremail: email.email,
+      contestname: email.contestname,
+      prizemoney: email.prizemoney,
+      createdAt: new Date()
+    }
+  },
+  { upsert: true })
       res.send(`winner updated`)
     })
 
@@ -556,6 +564,90 @@ const payload={
     const result= await ContestColl.find({status:"Approved"}).sort({participantsCount:-1}).limit(5).toArray()
     res.send(result)
    })
+
+   app.get(`/leaderbord`,async(req,res)=>{
+    const result= await userColl.find().sort({wins:-1}).toArray()
+    res.send(result)
+   })
+
+
+
+   app.post("/create-checkout-session",veryfyjwt,async(req,res)=>{
+    const { contestId,amount,namu,deadline } = req.body;
+    const useremail = req.decoded.email;
+      const contest = await ContestColl.findOne({
+    _id: new ObjectId(contestId),
+    status: "Approved",
+  });
+
+  const session = await stripe.checkout.sessions.create({
+    mode: "payment",
+    payment_method_types: ["card"],
+    customer_email: useremail,
+    line_items: [
+      {
+        price_data: {
+          currency: "usd",
+          unit_amount: contest.price * 100,
+          product_data: { name: contest.name },
+        },
+        quantity: 1,
+      },
+    ],
+    metadata: { contestId, useremail,namu,deadline },
+   success_url: `${process.env.CLIENT_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+   cancel_url: `${process.env.CLIENT_URL}/payment-cancel`,
+  });
+
+      res.send({ url: session.url });
+
+   })
+
+
+app.post("/confirm-payment",veryfyjwt,async(req,res)=>{
+  const { sessionId } = req.body;
+
+  const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+  if (session.payment_status !== "paid") {
+    return res.status(400).send({ message: "Payment not completed" });
+  }
+
+  const { contestId, useremail,namu,deadline } = session.metadata;
+
+  const exist = await registrationColl.findOne({ contestId, useremail });
+  if (exist) {
+    return res.send({ message: "Already registered" });
+
+
+  }
+
+  await registrationColl.insertOne({
+    contestId,
+    useremail,
+    namu,
+    deadline,
+    amount: session.amount_total / 100,
+    paymentStatus: "paid",
+    paidAt: new Date(),
+    stripeSessionId: session.id,
+  });
+
+  await userColl.updateOne(
+    { email: useremail },
+    { $inc: { participatedCount: 1 } }
+  );
+
+  await ContestColl.updateOne(
+    { _id: new ObjectId(contestId) },
+    { $inc: { participantsCount: 1 } }
+  );
+
+  res.send({ contestId })
+
+
+})
+
 
   } finally {}
     
